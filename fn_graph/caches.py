@@ -1,13 +1,27 @@
 import hashlib
 import inspect
 import json
+import pandas as pd
 import pickle
+from datetime import datetime
 from io import BytesIO
 from logging import getLogger
-from pathlib import Path
+from pathlib import Path, PurePath
+from typing import Union, Dict
 
 
+PathorString = Union[str, Path]
 log = getLogger(__name__)
+
+
+def input_to_file(key, value, fn):
+    if isinstance(value, (int, float, pd.Timestamp, PurePath)):
+        value = str(value)
+    elif isinstance(value, (set, list)):
+        if type(value) == set:
+            value = list(value)
+    with open(fn, "w") as f:
+        json.dump({key: value}, f)
 
 
 def fn_value(fn):
@@ -186,8 +200,6 @@ class DevelopmentCache(NullCache):
             if format == "pickle":
                 return pickle.load(f)
             elif format == "pandas-parquet":
-                import pandas as pd
-
                 return pd.read_parquet(f)
             else:
                 raise Exception(f"Unknown caching fn_graph format: {format}")
@@ -239,3 +251,80 @@ class DevelopmentCache(NullCache):
         for path in paths:
             if path.exists():
                 path.unlink()
+
+
+class FuncOuputCache(NullCache):
+    """
+    Cache functionality to store all function outputs of a composer.
+
+    IMPORTANT:
+    For this to work the composer needs to set a paramater called funcoutput,
+    that can either be 'save' or 'load'. 
+    """
+
+    def __init__(self, name):
+        self.name = name
+        self.df = '%Y-%m-%d'
+        self.init_date = datetime.today().strftime(self.df)
+        self.cache_parent = Path('data/func_out_cache')
+        self.cache_dir = self.cache_parent / Path(self.init_date)
+        
+    @property
+    def cache_root(self):
+        return self.cache_dir
+    
+    @property
+    def latest_saved_date(self):
+        glob_date_pattern = '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+        dates = [datetime.strptime(
+            x.name, self.df) for x in self.cache_parent.glob(glob_date_pattern
+                )]
+        if len(dates) > 0:
+            dates.sort()
+            return dates[-1].strftime(self.df)
+        else:
+            return None
+
+    def get(self, composer, key):
+        if self.latest_saved_date != datetime.today().strftime(self.df):
+            log.error("The function output cache was created on a different date")
+        log.debug(f"Retrieving function output {self.cache_dir / self.name / key}")
+        data_folder_path = self.cache_dir / self.name / key
+        info_file_path = data_folder_path / f"{key}.info.json"
+        with open(info_file_path) as json_file:
+            params = json.load(json_file)
+        file_path = (data_folder_path / key)
+        try:
+            if params['format'] ==  "<class 'pandas.core.series.Series'>":
+                return pd.read_parquet(file_path.with_suffix('.parquet')).iloc[:, 0]
+            elif params['format'] ==  "<class 'pandas.core.frame.DataFrame'>":
+                return pd.read_parquet(file_path.with_suffix('.parquet'))
+            else:
+                with open(file_path, "rb") as f:
+                    return pickle.load(f)
+        except:
+            raise Exception(f"Function output data not found: {key}")
+
+    def set(self, composer, key, value):
+        params = {}
+        self.cache_root.mkdir(parents=True, exist_ok=True)
+        log.debug(f"Saving function output {self.cache_dir / self.name / key}")
+        data_folder_path = self.cache_dir / self.name / key
+        data_folder_path.mkdir(parents=True, exist_ok=True)
+        info_file_path = data_folder_path / f"{key}.info.json"
+        file_path = (data_folder_path / key)
+        params["format"] = str(type(value))
+        if type(value) == pd.core.frame.DataFrame:
+            #parquet must have string column names
+            value.columns = value.columns.map(str)
+            value.to_parquet(file_path.with_suffix('.parquet'))
+        elif type(value) == pd.core.series.Series:
+            value.to_frame().to_parquet(file_path.with_suffix('.parquet'))
+        else:
+            try:
+                with open(file_path, "wb") as f:
+                    pickle.dump(value, f)
+            except:
+                raise Exception(f'Format not supported for {key}')
+        with open(info_file_path, "w") as f:
+            json.dump(params, f)
