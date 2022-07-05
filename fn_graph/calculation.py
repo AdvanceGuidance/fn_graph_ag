@@ -48,15 +48,18 @@ def get_execution_instructions(composer, dag, outputs):
     execution_instructions = []
     for node in execution_order:
         log.debug(node)
-        if composer._cache.__class__.__name__ == 'FuncOuputCache':
-            if composer._parameters['funcoutput'][1] == 'save':
-                node_instruction = NodeInstruction.CALCULATE
-                execution_instructions.append((node, node_instruction))
-                continue
         if node in invalid_nodes:
-            node_instruction = NodeInstruction.CALCULATE
+            if (composer._cache.__class__.__name__ == 'FuncOuputCache' and
+                composer._parameters['funcoutput'][1] == 'load'):
+                node_instruction = NodeInstruction.RETRIEVE
+            else:
+                node_instruction = NodeInstruction.CALCULATE
         elif node in must_be_retrieved:
-            node_instruction = NodeInstruction.RETRIEVE
+            if (composer._cache.__class__.__name__ == 'FuncOuputCache' and
+                composer._parameters['funcoutput'][1] == 'save'):
+                node_instruction = NodeInstruction.CALCULATE
+            else:
+                node_instruction = NodeInstruction.RETRIEVE
         else:
             node_instruction = NodeInstruction.IGNORE
         execution_instructions.append((node, node_instruction))
